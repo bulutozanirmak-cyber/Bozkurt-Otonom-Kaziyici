@@ -1,64 +1,77 @@
 import requests
 from bs4 import BeautifulSoup
-data_json = {} # geçici değişken
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import urllib3
 
-# SSL uyarılarını kapatıyoruz
+# SSL sertifika doğrulama uyarılarını kapatıyoruz
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def kazima_baslat():
-    url = "https://www.resmigazete.gov.tr/"
+def kazima_islem():
+    # Bugünün tarihini alıyoruz (Geçmişe dönük döngü için baz tarih)
+    bugun = datetime.now()
+    
+    # Şimdilik en son yayımlanan Resmi Gazete'yi hedefliyoruz
+    tarih_str = bugun.strftime("%Y%m%d")
+    yil = bugun.strftime("%Y")
+    ay = bugun.strftime("%m")
+    
+    # Resmi Gazete Arşiv URL Yapısı
+    url = f"https://www.resmigazete.gov.tr/eskiler/{yil}/{ay}/{tarih_str}.htm"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    print(f"[BİLGİ] {url} adresine bağlanılıyor...")
+    print(f"[BİLGİ] {url} adresinden veriler çekiliyor...")
     
     try:
-        # verify=False eklenerek SSL doğrulama hatası engellendi
         response = requests.get(url, headers=headers, verify=False, timeout=30)
-        response.encoding = 'utf-8'
         
+        # Eğer bugün henüz Resmi Gazete yayımlanmadıysa bir önceki güne bakabilir
         if response.status_code != 200:
-            print(f"[HATA] Sayfaya ulaşılamadı. Durum Kodu: {response.status_code}")
+            print(f"[UYARI] {tarih_str} tarihli Resmi Gazete henüz bulunamadı. Kod: {response.status_code}")
             return
-            
+
+        response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
-        veriler = []
         
-        for link in soup.find_all('a', href=True):
-            text = link.get_text(strip=True)
+        veriler = []
+        # Sayfadaki başlıkları ve ilgili alt bağlantıları topluyoruz
+        for item in soup.find_all(['h2', 'h3', 'a'], href=True):
+            text = item.get_text(strip=True)
             if text and len(text) > 5:
-                hedef_link = url + link['href'] if link['href'].startswith('/') else link['href']
-                veriler.append({"baslik": text, "link": hedef_link})
+                link = item['href']
+                if not link.startswith('http'):
+                    link = f"https://www.resmigazete.gov.tr{link}"
+                veriler.append({
+                    "baslik": text,
+                    "link": link
+                })
                 
         payload = {
-            "source": "resmi_gazete_test",
-            "tarih": datetime.now().strftime("%Y-%m-%d"),
+            "source": "resmi_gazete_gercek",
+            "tarih": bugun.strftime("%Y-%m-%d"),
             "toplanan_icerik_sayisi": len(veriler),
             "veriler": veriler
         }
         
         api_url = os.environ.get("BOZKURT_API_URL")
-        
         if not api_url:
-            print("[HATA] BOZKURT_API_URL bulunamadı!")
+            print("[HATA] BOZKURT_API_URL tanımlı değil!")
             return
             
-        print(f"[BİLGİ] Veriler Ana PC'ye fırlatılıyor...")
+        print(f"[BİLGİ] Toplanan {len(veriler)} içerik Ana PC'ye fırlatılıyor...")
         
         api_response = requests.post(api_url, json=payload, timeout=30)
         if api_response.status_code == 200:
-            print("[BAŞARILI] Bağlantı Kuruldu! Veriler Ubuntu'ya ulaştı.")
+            print("[BAŞARILI] Resmi Gazete verileri Ana PC'ye mühürlendi.")
         else:
             print(f"[HATA] Fırlatma başarısız. Durum Kodu: {api_response.status_code}")
             
     except Exception as e:
-        print(f"[KRİTİK HATA] İşlem sırasında hata oluştu: {str(e)}")
+        print(f"[KRİTİK HATA] Kazıma sırasında hata oluştu: {str(e)}")
 
 if __name__ == "__main__":
-    kazima_baslat()
+    kazima_islem()
