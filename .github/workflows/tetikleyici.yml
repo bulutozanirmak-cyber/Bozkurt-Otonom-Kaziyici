@@ -1,31 +1,27 @@
 name: Otonom Kaziyici Motoru
 
-# Sistemin ne zaman tetikleneceğini belirliyoruz
 on:
-  workflow_dispatch: # Bu komut, sistemi şimdilik sadece senin manuel olarak bir butona basarak test edebilmeni sağlar.
+  workflow_dispatch: 
 
 jobs:
   kazima_isleri:
-    runs-on: ubuntu-latest # GitHub'ın ücretsiz, geçici Linux sunucusunu talep ediyoruz
+    runs-on: ubuntu-latest
 
     steps:
-      # 1. Kodlarımızı geçici sunucuya çeker
+      # Sürüm v4'e yükseltildi
       - name: Depoyu Klonla
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      # 2. Çalışma ortamına Python kurar
+      # Sürüm v5'e yükseltildi
       - name: Python 3.10 Kurulumu
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      # 3. İhtiyacımız olan kütüphaneleri yükler
       - name: Kütüphaneleri Yükle
         run: pip install requests beautifulsoup4
 
-      # 4. Asıl kazıyıcı kodumuzu çalıştırır ve veriyi fırlatır
       - name: Kazıyıcıyı Başlat
         env:
-          # Bir önceki adımda tanımladığımız şifreli tünel adresi
           BOZKURT_API_URL: ${{ secrets.BOZKURT_API_URL }} 
         run: python resmi_gazete_kaziyici.py
