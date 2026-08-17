@@ -12,9 +12,14 @@ def kazima_baslat():
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
-    print(f"[BİLGİ] {url} adresine bağlanılıyor...")
-    response = requests.get(url, headers=headers)
-    response.encoding = 'utf-8'
+   print(f"[BİLGİ] {url} adresine bağlanılıyor...")
+    
+    # verify=False parametresi ile SSL sertifika doğrulama hatasını atlıyoruz
+    response = requests.get(url, headers=headers, verify=False)
+    
+    # SSL uyarısını gizlemek için optional urllib3 uyarısını bastırabiliriz
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     
     if response.status_code != 200:
         print(f"[HATA] Sayfaya ulaşılamadı. Durum Kodu: {response.status_code}")
