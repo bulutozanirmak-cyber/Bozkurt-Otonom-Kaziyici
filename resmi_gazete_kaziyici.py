@@ -10,15 +10,34 @@ import time
 import re
 import random
 import io
-import pymupdf  # PDF okuma motorumuz
+import pymupdf
 from urllib.parse import urljoin
+
+# Görünmez Tarayıcı (Selenium) Kütüphaneleri
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 KUYRUK_KLASORU = "kuyruk"
 os.makedirs(KUYRUK_KLASORU, exist_ok=True)
 
-# --- METİN VE PDF İŞLEME FONKSİYONLARI ---
+# --- TARAYICI BAŞLATMA ---
+def tarayici_baslat():
+    """Arka planda gizli bir Google Chrome açar."""
+    print("[BİLGİ] Görünmez tarayıcı (Selenium) yedek güç olarak başlatılıyor...")
+    chrome_options = Options()
+    chrome_options.add_argument("--headless") # Ekransız çalışma
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=chrome_options)
+    return driver
+
+# --- METİN İŞLEME VE KAZIMA FONKSİYONLARI ---
 
 def metin_temizle(metin):
     if not metin:
@@ -27,44 +46,56 @@ def metin_temizle(metin):
     return metin.strip(" -\r\n")
 
 def pdf_metnini_cek(pdf_linki):
-    """
-    Doğru adresi verilen PDF linkini indirir ve PyMuPDF kullanarak içindeki saf metni çıkarır.
-    """
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    """Tier 1 (Hızlı Yol): PDF dosyasını indirip PyMuPDF ile okumaya çalışır."""
+    headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        r = requests.get(pdf_linki, headers=headers, verify=False, timeout=30)
-        
-        if r.status_code != 200 or 'application/pdf' not in r.headers.get('Content-Type', '').lower():
-             return "[HATA: Orijinal PDF dosyasına ulaşılamadı. Sadece HTML formatında olabilir.]"
-
-        doc = pymupdf.open(stream=r.content, filetype="pdf")
-        metin = ""
-        for page in doc:
-            metin += page.get_text("text") + " "
-        
-        temiz_metin = metin_temizle(metin)
-        
-        if len(temiz_metin) < 10:
-            return "[PDF_BILGISI: Bu belge resim olarak taranmış, OCR (Görselden Metin Tanıma) gerekiyor.]"
-            
-        return temiz_metin
-        
-    except Exception as e:
-        return f"[PDF_OKUMA_HATASI: Detay -> {str(e)}]"
-
-# --- HABERLEŞME VE VERİ GÖNDERİMİ ---
-
-def get_arsiv_durumu():
-    api_url = os.environ.get("BOZKURT_API_URL")
-    if not api_url: return None
-    state_url = api_url.replace("/api/ingest", "/api/state")
-    try:
-        r = requests.get(state_url, timeout=15)
-        if r.status_code == 200:
-            return r.json().get("en_eski_kazinan_tarih")
+        r = requests.get(pdf_linki, headers=headers, verify=False, timeout=15)
+        if r.status_code == 200 and 'application/pdf' in r.headers.get('Content-Type', '').lower():
+            doc = pymupdf.open(stream=r.content, filetype="pdf")
+            metin = ""
+            for page in doc:
+                metin += page.get_text("text") + " "
+            return metin_temizle(metin)
     except:
         pass
-    return None
+    return None # Hızlı yol başarısız olursa None döner ki Selenium devreye girsin.
+
+def görünmez_tarayici_ile_cek(link, driver):
+    """Tier 2 (Kaba Kuvvet): Sayfaya bir insan gibi girip ekrandaki metni kopyalar."""
+    try:
+        driver.get(link)
+        time.sleep(3) # Sayfanın ve arkadaki PDF okuyucunun (pdf.js) yüklenmesi için 3 saniye bekle
+        
+        # Ekrandaki tüm metni al
+        metin = driver.find_element(By.TAG_NAME, "body").text
+        temiz_metin = metin_temizle(metin)
+        
+        if len(temiz_metin) > 10:
+            return temiz_metin
+        else:
+            return "[HATA: Görünmez tarayıcı ekranda okunabilir bir metin bulamadı.]"
+    except Exception as e:
+        return f"[TARAYICI_HATASI: {str(e)}]"
+
+def alt_sayfa_isle(link, driver):
+    """İki aşamalı hibrit okuma yöneticisi."""
+    # Adım 1: Hızlı yolu dene (.pdf üreterek)
+    pdf_linki = link.lower().replace('.htm', '.pdf')
+    if "main.aspx" in pdf_linki and "main=" in pdf_linki:
+        match = re.search(r'main=([^&]+)', pdf_linki)
+        if match:
+            pdf_linki = match.group(1)
+            
+    tam_metin = pdf_metnini_cek(pdf_linki)
+    
+    # Adım 2: Hızlı yol işe yaramadıysa (None döndüyse), Görünmez Tarayıcıyı kullan
+    if not tam_metin or len(tam_metin) < 10:
+        print("      -> Hızlı yol başarısız. Görünmez tarayıcı (Kaba Kuvvet) devreye giriyor...")
+        tam_metin = görünmez_tarayici_ile_cek(link, driver)
+        
+    return tam_metin
+
+# --- HABERLEŞME (Bu kısımlar standart) ---
 
 def git_islem(dosya_yolu, islem_tipi):
     try:
@@ -82,17 +113,14 @@ def git_islem(dosya_yolu, islem_tipi):
 def veri_gonder(payload, dosya_yolu=None):
     api_url = os.environ.get("BOZKURT_API_URL")
     if not api_url: return False
-    
     try:
         response = requests.post(api_url, json=payload, timeout=30)
         if response.status_code == 200:
             print(f"[BAŞARILI] {payload['tarih']} verileri Ubuntu'ya mühürlendi.")
-            if dosya_yolu:
-                git_islem(dosya_yolu, "sil")
+            if dosya_yolu: git_islem(dosya_yolu, "sil")
             return True
     except:
         pass
-        
     if dosya_yolu is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dosya_yolu = os.path.join(KUYRUK_KLASORU, f"kuyruk_{payload['tarih']}_{timestamp}.json")
@@ -101,21 +129,18 @@ def veri_gonder(payload, dosya_yolu=None):
         git_islem(dosya_yolu, "ekle")
     return False
 
-# --- ANA KAZIMA DÖNGÜSÜ ---
+# --- ANA DÖNGÜ ---
 
-def gunu_kazi(tarih_obj, deneme_sayisi=1):
+def gunu_kazi(tarih_obj, driver):
     tarih_str = tarih_obj.strftime("%Y%m%d")
     yil = tarih_obj.strftime("%Y")
     ay = tarih_obj.strftime("%m")
-    
-    # url: Bulunduğumuz günün dizini
     url = f"https://www.resmigazete.gov.tr/eskiler/{yil}/{ay}/{tarih_str}.htm"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    headers = {"User-Agent": "Mozilla/5.0"}
     
     try:
         response = requests.get(url, headers=headers, verify=False, timeout=20)
-        if response.status_code != 200:
-            return True 
+        if response.status_code != 200: return True 
             
         response.encoding = response.apparent_encoding if response.apparent_encoding else 'windows-1254'
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -132,21 +157,12 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
                 
             if text and len(text) > 5:
                 href = element['href']
-                
-                # HATA DÜZELTİLDİ: Sitenin ana domaini yerine, bulunduğumuz günün dizini ile (url) birleştiriyoruz.
                 link = urljoin(url, href)
                 
-                # İLANLAR İÇİN DÜZELTME: Link karmaşık main.aspx yapısındaysa, asıl hedefi içinden çek.
-                if "main.aspx" in link and "main=" in link:
-                    match = re.search(r'main=([^&]+)', link)
-                    if match:
-                        link = match.group(1)
-                
                 if "resmigazete.gov.tr" in link:
-                    print(f"[KAZIMA] PDF Aranıyor: {text[:40]}...")
+                    print(f"[KAZIMA] Okunuyor: {text[:40]}...")
                     
-                    pdf_linki = link.lower().replace('.htm', '.pdf')
-                    tam_metin = pdf_metnini_cek(pdf_linki)
+                    tam_metin = alt_sayfa_isle(link, driver)
                     
                     veriler.append({
                         "kategori": mevcut_kategori,
@@ -154,36 +170,30 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
                         "link": link, 
                         "tam_metin": tam_metin
                     })
-                    time.sleep(1.0) 
                 
-        if not veriler:
-            return True
-            
+        if not veriler: return True
         payload = {
             "source": "resmi_gazete_llm_ready",
             "tarih": tarih_obj.strftime("%Y-%m-%d"),
             "toplanan_icerik_sayisi": len(veriler),
             "veriler": veriler
         }
-        
         veri_gonder(payload)
         return True
-        
-    except requests.exceptions.Timeout:
-        if deneme_sayisi <= 3:
-            time.sleep(10 * deneme_sayisi)
-            return gunu_kazi(tarih_obj, deneme_sayisi + 1)
-        return False
     except Exception as e:
         print(f"[HATA] {tarih_str} işlenirken hata: {str(e)}")
         return False
 
 def kazima_islem():
-    # TEST AMAÇLI: Yalnızca hata aldığımız 11 Ağustos 2026'yı çalıştırıyoruz.
+    driver = tarayici_baslat() # Tarayıcıyı işlem boyunca sadece 1 kez açıyoruz.
+    
+    # TEST AMAÇLI: 11 Ağustos'u test ediyoruz
     test_tarihi = datetime.strptime("2026-08-11", "%Y-%m-%d")
-    print(f"[TEST BAŞLIYOR] {test_tarihi.strftime('%Y-%m-%d')} tarihi için özel PDF taraması...")
-    gunu_kazi(test_tarihi)
+    print(f"[TEST] {test_tarihi.strftime('%Y-%m-%d')} tarihi için HİBRİT tarama başlıyor...")
+    gunu_kazi(test_tarihi, driver)
     print("[TEST BİTTİ]")
+    
+    driver.quit() # İşlem bitince tarayıcıyı kapat.
 
 if __name__ == "__main__":
     kazima_islem()
