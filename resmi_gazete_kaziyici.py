@@ -8,6 +8,7 @@ import glob
 import subprocess
 import time
 import re
+import random
 from urllib.parse import urljoin
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -16,14 +17,12 @@ KUYRUK_KLASORU = "kuyruk"
 os.makedirs(KUYRUK_KLASORU, exist_ok=True)
 
 def metin_temizle(metin):
-    """Gereksiz boşlukları, HTML artıklarını ve kaçış karakterlerini temizler"""
     if not metin:
         return ""
     metin = re.sub(r'\s+', ' ', metin)
     return metin.strip(" -\r\n")
 
 def alt_sayfa_metnini_cek(link):
-    """Alt sayfadaki tam metni YZ bağlamını bozmayacak şekilde saf metin olarak çeker"""
     if link.endswith('.pdf'):
         return "[PDF_DOSYASI: Bu içerik doğrudan PDF formatındadır, metin analizi için harici katman gerekir.]"
         
@@ -34,17 +33,14 @@ def alt_sayfa_metnini_cek(link):
             r.encoding = r.apparent_encoding if r.apparent_encoding else 'windows-1254'
             soup = BeautifulSoup(r.text, 'html.parser')
             
-            # Sayfa içindeki gereksiz script, stil, menü ve footer'ları at
             for element in soup(["script", "style", "nav", "header", "footer"]):
                 element.decompose()
                 
-            # Resmi Gazete metin gövdesini hedefle
-            Hedef_alanlar = soup.find_all(['p', 'div'], class_=['özet', 'metin', 'İçerik', 'icerik'])
+            hedef_alanlar = soup.find_all(['p', 'div'], class_=['özet', 'metin', 'İçerik', 'icerik'])
             if hedef_alanlar:
                 metinler = [metin_temizle(p.get_text()) for p in hedef_alanlar]
                 return " ".join([m for m in metinler if len(m) > 10])
             else:
-                # Fallback: Tüm body metnini temiz al
                 body = soup.find('body')
                 if body:
                     return metin_temizle(body.get_text())
@@ -129,7 +125,6 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
         soup = BeautifulSoup(response.text, 'html.parser')
         veriler = []
         
-        # Bölümleri ve başlıkları hiyerarşik yakala
         mevcut_kategori = "GENEL"
         
         for element in soup.find_all(['h2', 'h3', 'h4', 'a'], href=True):
@@ -143,7 +138,6 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
             if text and len(text) > 5:
                 link = urljoin("https://www.resmigazete.gov.tr", element['href'])
                 
-                # Sadece geçerli Resmi Gazete alt sayfalarını işle
                 if "resmigazete.gov.tr" in link:
                     print(f"[KAZIMA] ({mevcut_kategori}) -> {text[:40]}...")
                     tam_metin = alt_sayfa_metnini_cek(link)
@@ -154,7 +148,7 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
                         "link": link,
                         "tam_metin": tam_metin
                     })
-                    time.sleep(0.5) # Sunucu koruması
+                    time.sleep(0.5)
                 
         if not veriler:
             return True
@@ -179,29 +173,8 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
         return False
 
 def kazima_islem():
-    baslangic_zamani = time.time()
-    MAX_SURE = 4.5 * 3600 
-    
-    kuyrugu_isle() 
-    
     bugun = datetime.now()
     gunu_kazi(bugun)
-    
-    en_eski_tarih_str = get_arsiv_durumu()
-    if not en_eski_tarih_str:
-        en_eski_tarih_str = bugun.strftime("%Y-%m-%d")
-        
-    hedef_tarih = datetime.strptime(en_eski_tarih_str, "%Y-%m-%d") - timedelta(days=1)
-    
-    while True:
-        if (time.time() - baslangic_zamani) >= MAX_SURE:
-            break
-        if hedef_tarih.strftime("%Y-%m-%d") <= "1921-02-07":
-            break
-            
-        gunu_kazi(hedef_tarih)
-        time.sleep(random.uniform(2.0, 4.0))
-        hedef_tarih -= timedelta(days=1)
 
 if __name__ == "__main__":
     kazima_islem()
