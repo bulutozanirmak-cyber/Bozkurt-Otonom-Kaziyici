@@ -21,7 +21,7 @@ jobs:
           python-version: '3.10'
 
       - name: Kütüphaneleri Yükle
-        run: pip install requests beautifulsoup4 PyPDF2
+        run: pip install requests beautifulsoup4 PyMuPDF
 
       - name: Kazıyıcıyı Başlat
         env:
