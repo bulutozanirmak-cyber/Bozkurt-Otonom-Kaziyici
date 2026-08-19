@@ -9,8 +9,7 @@ import subprocess
 import time
 import re
 import random
-import io
-import PyPDF2  # PDF'leri GitHub üzerinde okumak için
+import fitz  # PyMuPDF kütüphanesi - Yeni, çok daha güçlü PDF motorumuz
 from urllib.parse import urljoin
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -28,24 +27,30 @@ def metin_temizle(metin):
     return metin.strip(" -\r\n")
 
 def pdf_metnini_cek(pdf_icerik):
-    """GitHub'ın belleğine inen PDF dosyasının içindeki metinleri çıkarır."""
+    """PyMuPDF kullanarak PDF içindeki metni zorla söker alır."""
     try:
-        with io.BytesIO(pdf_icerik) as f:
-            pdf = PyPDF2.PdfReader(f)
-            metin = ""
-            for sayfa in pdf.pages:
-                cekilen = sayfa.extract_text()
-                if cekilen:
-                    metin += cekilen + " "
-            return metin_temizle(metin)
+        # Belleğe inen PDF'i fitz (PyMuPDF) ile açıyoruz
+        doc = fitz.open(stream=pdf_icerik, filetype="pdf")
+        metin = ""
+        for page in doc:
+            metin += page.get_text("text") + " "
+        
+        temiz_metin = metin_temizle(metin)
+        if len(temiz_metin) < 10:
+            return "[PDF_BILGISI: Bu PDF tamamen taranmış resimlerden oluşuyor, OCR (Görselden Metin Tanıma) gerekiyor.]"
+        return temiz_metin
     except Exception as e:
-        return f"[PDF_OKUMA_HATASI: İçerik şifreli veya metin dışı formatta olabilir]"
+        return f"[PDF_OKUMA_HATASI: Detay -> {str(e)}]"
 
-def alt_sayfa_metnini_cek(link):
-    """Linkteki içeriğin PDF mi yoksa HTML mi olduğunu anlar ve temiz metni döner."""
+def alt_sayfa_metnini_cek(link, derinlik=0):
+    """Linkteki içeriği okur. Gömülü pencere (iframe) varsa içine dalar."""
+    # Sonsuz döngüyü engellemek için güvenlik sınırı
+    if derinlik > 2: 
+        return ""
+
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        r = requests.get(link, headers=headers, verify=False, timeout=25)
+        r = requests.get(link, headers=headers, verify=False, timeout=30)
         if r.status_code == 200:
             
             # 1. Kontrol: Sayfa PDF mi?
@@ -53,18 +58,30 @@ def alt_sayfa_metnini_cek(link):
             if 'application/pdf' in content_type or link.lower().endswith('.pdf'):
                 return pdf_metnini_cek(r.content)
             
-            # 2. Kontrol: Sayfa normal HTML ise
+            # 2. Kontrol: Sayfa HTML ise
             r.encoding = r.apparent_encoding if r.apparent_encoding else 'windows-1254'
             soup = BeautifulSoup(r.text, 'html.parser')
             
+            # Gömülü pencere (iframe/frame) kontrolü
+            frames = soup.find_all(['iframe', 'frame'])
+            if frames:
+                frame_src = frames[0].get('src')
+                if frame_src:
+                    gercek_link = urljoin(link, frame_src)
+                    # Gömülü pencerenin içindeki linke git (Özyineleme)
+                    return alt_sayfa_metnini_cek(gercek_link, derinlik + 1)
+            
+            # Sayfadaki gereksiz menü ve kodları at
             for element in soup(["script", "style", "nav", "header", "footer"]):
                 element.decompose()
                 
+            # Asıl metin alanlarını ara
             hedef_alanlar = soup.find_all(['p', 'div'], class_=['özet', 'metin', 'İçerik', 'icerik'])
             if hedef_alanlar:
                 metinler = [metin_temizle(p.get_text()) for p in hedef_alanlar]
                 return " ".join([m for m in metinler if len(m) > 10])
             else:
+                # Hiçbir şey bulamazsa tüm gövdeyi (body) al
                 body = soup.find('body')
                 if body:
                     return metin_temizle(body.get_text())
@@ -75,7 +92,6 @@ def alt_sayfa_metnini_cek(link):
 # --- HABERLEŞME VE VERİ GÖNDERİMİ ---
 
 def get_arsiv_durumu():
-    """Ubuntu'dan en eski tarihi sorar."""
     api_url = os.environ.get("BOZKURT_API_URL")
     if not api_url: return None
     state_url = api_url.replace("/api/ingest", "/api/state")
@@ -88,7 +104,6 @@ def get_arsiv_durumu():
     return None
 
 def git_islem(dosya_yolu, islem_tipi):
-    """GitHub deposuna yedekleme yapar veya siler."""
     try:
         if islem_tipi == "sil" and os.path.exists(dosya_yolu):
             os.remove(dosya_yolu)
@@ -102,19 +117,18 @@ def git_islem(dosya_yolu, islem_tipi):
         pass
 
 def veri_gonder(payload, dosya_yolu=None):
-    """Süzülmüş saf metni JSON olarak Ubuntu Ana PC'ye fırlatır."""
     api_url = os.environ.get("BOZKURT_API_URL")
     if not api_url: return False
     
     try:
         response = requests.post(api_url, json=payload, timeout=30)
         if response.status_code == 200:
-            print(f"[BAŞARILI] {payload['tarih']} verileri (PDF & HTML) Ubuntu'ya mühürlendi.")
+            print(f"[BAŞARILI] {payload['tarih']} verileri Ubuntu'ya mühürlendi.")
             if dosya_yolu:
                 git_islem(dosya_yolu, "sil")
             return True
     except:
-        print(f"[UYARI] Ubuntu'ya ulaşılamadı, veri GitHub kuyruğuna alınıyor...")
+        pass
         
     if dosya_yolu is None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -124,7 +138,7 @@ def veri_gonder(payload, dosya_yolu=None):
         git_islem(dosya_yolu, "ekle")
     return False
 
-# --- ANA KAZIMA DÖNGÜSÜ (5 Saatlik Geriye Tarama) ---
+# --- ANA KAZIMA DÖNGÜSÜ ---
 
 def gunu_kazi(tarih_obj, deneme_sayisi=1):
     tarih_str = tarih_obj.strftime("%Y%m%d")
@@ -165,7 +179,7 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
                         "link": link,
                         "tam_metin": tam_metin
                     })
-                    time.sleep(0.5) # GitHub çok hızlıdır, siteyi yormayalım
+                    time.sleep(0.5) 
                 
         if not veriler:
             return True
@@ -191,9 +205,8 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
 
 def kazima_islem():
     baslangic_zamani = time.time()
-    MAX_SURE = 4.5 * 3600 # 4.5 Saatlik güvenlik sınırı
+    MAX_SURE = 4.5 * 3600 
     
-    # Varsa önceki günlerden kalan kuyruğu erit
     dosyalar = glob.glob(os.path.join(KUYRUK_KLASORU, "*.json"))
     for dosya in dosyalar:
         with open(dosya, "r", encoding="utf-8") as f:
@@ -210,14 +223,12 @@ def kazima_islem():
     
     while True:
         if (time.time() - baslangic_zamani) >= MAX_SURE:
-            print("[BİLGİ] GitHub maksimum çalışma süresine yaklaştı. Görev güvenle devrediliyor.")
             break
         if hedef_tarih.strftime("%Y-%m-%d") <= "1921-02-07":
-            print("[BİLGİ] Bütün arşiv tarandı.")
             break
             
         gunu_kazi(hedef_tarih)
-        time.sleep(random.uniform(2.0, 4.0)) # Ban yememek için rastgele mola
+        time.sleep(random.uniform(2.0, 4.0)) 
         hedef_tarih -= timedelta(days=1)
 
 if __name__ == "__main__":
