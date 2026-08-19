@@ -21,7 +21,7 @@ jobs:
           python-version: '3.10'
 
       - name: Kütüphaneleri Yükle
-        run: pip install requests beautifulsoup4 PyMuPDF
+        run: pip install requests beautifulsoup4 PyMuPDF selenium webdriver-manager
 
       - name: Kazıyıcıyı Başlat
         env:
