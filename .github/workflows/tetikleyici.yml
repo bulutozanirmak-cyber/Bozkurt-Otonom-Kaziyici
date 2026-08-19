@@ -1,7 +1,9 @@
 name: Otonom Kaziyici Motoru
 
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */5 * * *"
 
 jobs:
   kazima_isleri:
