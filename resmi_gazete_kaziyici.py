@@ -9,7 +9,8 @@ import subprocess
 import time
 import re
 import random
-import fitz  # PyMuPDF kütüphanesi - Yeni, çok daha güçlü PDF motorumuz
+import io
+import pymupdf  # Eski adıyla fitz, artık güncel çağrısıyla kullanıyoruz.
 from urllib.parse import urljoin
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -20,76 +21,46 @@ os.makedirs(KUYRUK_KLASORU, exist_ok=True)
 # --- METİN VE PDF İŞLEME FONKSİYONLARI ---
 
 def metin_temizle(metin):
-    """Gereksiz boşlukları ve HTML/PDF artıklarını temizler."""
+    """Gereksiz boşlukları ve satır atlamalarını temizler."""
     if not metin:
         return ""
     metin = re.sub(r'\s+', ' ', metin)
     return metin.strip(" -\r\n")
 
-def pdf_metnini_cek(pdf_icerik):
-    """PyMuPDF kullanarak PDF içindeki metni zorla söker alır."""
+def pdf_metnini_cek(pdf_linki):
+    """
+    Verilen PDF linkini indirir ve PyMuPDF kullanarak içindeki saf metni çıkarır.
+    Bu yöntem sayesinde sitenin menüleri veya çöp HTML kodları veriye karışmaz.
+    """
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     try:
-        # Belleğe inen PDF'i fitz (PyMuPDF) ile açıyoruz
-        doc = fitz.open(stream=pdf_icerik, filetype="pdf")
+        r = requests.get(pdf_linki, headers=headers, verify=False, timeout=30)
+        
+        # Eğer PDF indirilemediyse (Örneğin bazı ilanlar sadece HTML olabilir)
+        if r.status_code != 200 or 'application/pdf' not in r.headers.get('Content-Type', '').lower():
+             # Eğer PDF'i bulamazsak, boş dönüyoruz, böylece çöp HTML verisi girmiyor.
+             # Bir sonraki aşamada buraya sadece o ilanlar için özel bir HTML okuyucu yazabiliriz.
+             return "[HATA: Orijinal PDF dosyasına ulaşılamadı. Sadece HTML formatında olabilir.]"
+
+        # PDF başarıyla indiyse, bellekte aç ve metni sök
+        doc = pymupdf.open(stream=r.content, filetype="pdf")
         metin = ""
         for page in doc:
             metin += page.get_text("text") + " "
         
         temiz_metin = metin_temizle(metin)
+        
+        # Eğer PDF'ten metin çıkmadıysa (Taranmış belge ise)
         if len(temiz_metin) < 10:
-            return "[PDF_BILGISI: Bu PDF tamamen taranmış resimlerden oluşuyor, OCR (Görselden Metin Tanıma) gerekiyor.]"
+            return "[PDF_BILGISI: Bu belge resim olarak taranmış, OCR (Görselden Metin Tanıma) gerekiyor.]"
+            
         return temiz_metin
+        
     except Exception as e:
         return f"[PDF_OKUMA_HATASI: Detay -> {str(e)}]"
 
-def alt_sayfa_metnini_cek(link, derinlik=0):
-    """Linkteki içeriği okur. Gömülü pencere (iframe) varsa içine dalar."""
-    # Sonsuz döngüyü engellemek için güvenlik sınırı
-    if derinlik > 2: 
-        return ""
-
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-    try:
-        r = requests.get(link, headers=headers, verify=False, timeout=30)
-        if r.status_code == 200:
-            
-            # 1. Kontrol: Sayfa PDF mi?
-            content_type = r.headers.get('Content-Type', '').lower()
-            if 'application/pdf' in content_type or link.lower().endswith('.pdf'):
-                return pdf_metnini_cek(r.content)
-            
-            # 2. Kontrol: Sayfa HTML ise
-            r.encoding = r.apparent_encoding if r.apparent_encoding else 'windows-1254'
-            soup = BeautifulSoup(r.text, 'html.parser')
-            
-            # Gömülü pencere (iframe/frame) kontrolü
-            frames = soup.find_all(['iframe', 'frame'])
-            if frames:
-                frame_src = frames[0].get('src')
-                if frame_src:
-                    gercek_link = urljoin(link, frame_src)
-                    # Gömülü pencerenin içindeki linke git (Özyineleme)
-                    return alt_sayfa_metnini_cek(gercek_link, derinlik + 1)
-            
-            # Sayfadaki gereksiz menü ve kodları at
-            for element in soup(["script", "style", "nav", "header", "footer"]):
-                element.decompose()
-                
-            # Asıl metin alanlarını ara
-            hedef_alanlar = soup.find_all(['p', 'div'], class_=['özet', 'metin', 'İçerik', 'icerik'])
-            if hedef_alanlar:
-                metinler = [metin_temizle(p.get_text()) for p in hedef_alanlar]
-                return " ".join([m for m in metinler if len(m) > 10])
-            else:
-                # Hiçbir şey bulamazsa tüm gövdeyi (body) al
-                body = soup.find('body')
-                if body:
-                    return metin_temizle(body.get_text())
-    except Exception as e:
-        pass
-    return ""
-
 # --- HABERLEŞME VE VERİ GÖNDERİMİ ---
+# (Bu kısımlar aynı kalıyor, Ana PC ile iletişim kuran bloklar)
 
 def get_arsiv_durumu():
     api_url = os.environ.get("BOZKURT_API_URL")
@@ -145,6 +116,7 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
     yil = tarih_obj.strftime("%Y")
     ay = tarih_obj.strftime("%m")
     
+    # Günün ana fihrist sayfasının URL'si
     url = f"https://www.resmigazete.gov.tr/eskiler/{yil}/{ay}/{tarih_str}.htm"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
@@ -158,28 +130,38 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
         veriler = []
         mevcut_kategori = "GENEL"
         
+        # Ana sayfadaki tüm başlıkları ve linkleri dolaş
         for element in soup.find_all(['h2', 'h3', 'h4', 'a'], href=True):
             tag_name = element.name
             text = metin_temizle(element.get_text())
             
+            # Kategorileri (Yürütme ve İdare Bölümü, Yargı Bölümü vb.) yakala
             if tag_name in ['h2', 'h3', 'h4'] and len(text) > 3:
                 mevcut_kategori = text
                 continue
                 
+            # Alt linkleri (Kararlar, Yönetmelikler vb.) yakala
             if text and len(text) > 5:
                 link = urljoin("https://www.resmigazete.gov.tr", element['href'])
                 
+                # Sadece resmigazete domainindeki linkleri işle
                 if "resmigazete.gov.tr" in link:
-                    print(f"[KAZIMA] İşleniyor: {text[:40]}...")
-                    tam_metin = alt_sayfa_metnini_cek(link)
+                    print(f"[KAZIMA] PDF Aranıyor: {text[:40]}...")
+                    
+                    # KRİTİK DEĞİŞİKLİK: Link .htm ile bitiyorsa, .pdf olarak değiştirip PDF linkini üret.
+                    # Eğer zaten .pdf ise, olduğu gibi bırak.
+                    pdf_linki = link.lower().replace('.htm', '.pdf')
+                    
+                    # Ürettiğimiz PDF linkine gidip metni çektiriyoruz.
+                    tam_metin = pdf_metnini_cek(pdf_linki)
                     
                     veriler.append({
                         "kategori": mevcut_kategori,
                         "baslik": text,
-                        "link": link,
+                        "link": link,  # Orijinal linki JSON'da saklıyoruz
                         "tam_metin": tam_metin
                     })
-                    time.sleep(0.5) 
+                    time.sleep(1.0) # PDF indirme işlemi sunucuyu yorar, daha uzun nefes aldırıyoruz.
                 
         if not veriler:
             return True
@@ -204,32 +186,14 @@ def gunu_kazi(tarih_obj, deneme_sayisi=1):
         return False
 
 def kazima_islem():
-    baslangic_zamani = time.time()
-    MAX_SURE = 4.5 * 3600 
+    # TEST AMAÇLI: Sadece bugünü (veya belirli bir tarihi) kazıyıp durması için ayarladık.
+    # 5 saatlik geriye tarama döngüsünü test başarılı olana kadar kapalı tutuyoruz.
     
-    dosyalar = glob.glob(os.path.join(KUYRUK_KLASORU, "*.json"))
-    for dosya in dosyalar:
-        with open(dosya, "r", encoding="utf-8") as f:
-            veri_gonder(json.load(f), dosya_yolu=dosya)
-            
-    bugun = datetime.now()
-    gunu_kazi(bugun)
-    
-    en_eski_tarih_str = get_arsiv_durumu()
-    if not en_eski_tarih_str:
-        en_eski_tarih_str = bugun.strftime("%Y-%m-%d")
-        
-    hedef_tarih = datetime.strptime(en_eski_tarih_str, "%Y-%m-%d") - timedelta(days=1)
-    
-    while True:
-        if (time.time() - baslangic_zamani) >= MAX_SURE:
-            break
-        if hedef_tarih.strftime("%Y-%m-%d") <= "1921-02-07":
-            break
-            
-        gunu_kazi(hedef_tarih)
-        time.sleep(random.uniform(2.0, 4.0)) 
-        hedef_tarih -= timedelta(days=1)
+    # Hangi tarihi test etmek istiyorsak buraya yazıyoruz. Sen 11 Ağustos'ta sorun yaşamıştın.
+    test_tarihi = datetime.strptime("2026-08-11", "%Y-%m-%d")
+    print(f"[TEST BAŞLIYOR] {test_tarihi.strftime('%Y-%m-%d')} tarihi için özel PDF taraması...")
+    gunu_kazi(test_tarihi)
+    print("[TEST BİTTİ]")
 
 if __name__ == "__main__":
     kazima_islem()
