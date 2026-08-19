@@ -185,15 +185,46 @@ def gunu_kazi(tarih_obj, driver):
         return False
 
 def kazima_islem():
-    driver = tarayici_baslat() # Tarayıcıyı işlem boyunca sadece 1 kez açıyoruz.
+    baslangic_zamani = time.time()
+    MAX_SURE = 4.5 * 3600 # 4.5 Saatlik güvenlik sınırı
     
-    # TEST AMAÇLI: 11 Ağustos'u test ediyoruz
-    test_tarihi = datetime.strptime("2026-08-11", "%Y-%m-%d")
-    print(f"[TEST] {test_tarihi.strftime('%Y-%m-%d')} tarihi için HİBRİT tarama başlıyor...")
-    gunu_kazi(test_tarihi, driver)
-    print("[TEST BİTTİ]")
+    # 1. Tarayıcıyı başlat
+    driver = tarayici_baslat()
     
-    driver.quit() # İşlem bitince tarayıcıyı kapat.
+    # 2. Varsa önceki günlerden kalan kuyruğu erit
+    dosyalar = glob.glob(os.path.join(KUYRUK_KLASORU, "*.json"))
+    for dosya in dosyalar:
+        with open(dosya, "r", encoding="utf-8") as f:
+            veri_gonder(json.load(f), dosya_yolu=dosya)
+            
+    # 3. Her zaman önce bugünü kazı
+    bugun = datetime.now()
+    gunu_kazi(bugun, driver)
+    
+    # 4. Arşiv durumunu öğren ve geriye doğru taramaya başla
+    en_eski_tarih_str = get_arsiv_durumu()
+    if not en_eski_tarih_str:
+        en_eski_tarih_str = bugun.strftime("%Y-%m-%d")
+        
+    hedef_tarih = datetime.strptime(en_eski_tarih_str, "%Y-%m-%d") - timedelta(days=1)
+    
+    print(f"[BİLGİ] Otonom geriye dönük tarama başlıyor. Hedef: {hedef_tarih.strftime('%Y-%m-%d')}")
+    
+    # 5. Süre dolana kadar veya arşiv bitene kadar geriye doğru git
+    while True:
+        if (time.time() - baslangic_zamani) >= MAX_SURE:
+            print("[BİLGİ] GitHub maksimum çalışma süresine yaklaştı. Görev güvenle devrediliyor.")
+            break
+        if hedef_tarih.strftime("%Y-%m-%d") <= "1921-02-07":
+            print("[BİLGİ] Bütün arşiv tarandı.")
+            break
+            
+        gunu_kazi(hedef_tarih, driver)
+        time.sleep(random.uniform(2.0, 4.0)) # Ban yememek için rastgele mola
+        hedef_tarih -= timedelta(days=1)
+        
+    # 6. Tarayıcıyı kapat
+    driver.quit()
 
 if __name__ == "__main__":
     kazima_islem()
