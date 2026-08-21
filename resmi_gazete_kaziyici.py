@@ -11,7 +11,6 @@ import re
 import random
 import io
 import pymupdf
-from urllib.parse import urljoin
 
 # Görünmez Tarayıcı (Selenium) Kütüphaneleri
 from selenium import webdriver
@@ -30,14 +29,14 @@ def tarayici_baslat():
     """Arka planda gizli bir Google Chrome açar."""
     print("[BİLGİ] Görünmez tarayıcı (Selenium) yedek güç olarak başlatılıyor...")
     chrome_options = Options()
-    chrome_options.add_argument("--headless") # Ekransız çalışma
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
-# --- METİN İŞLEME VE KAZIMA FONKSİYONLARI ---
+# --- METİN VE PDF İŞLEME FONKSİYONLARI ---
 
 def metin_temizle(metin):
     if not metin:
@@ -46,7 +45,7 @@ def metin_temizle(metin):
     return metin.strip(" -\r\n")
 
 def pdf_metnini_cek(pdf_linki):
-    """Tier 1 (Hızlı Yol): PDF dosyasını indirip PyMuPDF ile okumaya çalışır."""
+    """Tier 1: PDF dosyasını indirip PyMuPDF ile okumaya çalışır."""
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
         r = requests.get(pdf_linki, headers=headers, verify=False, timeout=15)
@@ -58,18 +57,15 @@ def pdf_metnini_cek(pdf_linki):
             return metin_temizle(metin)
     except:
         pass
-    return None # Hızlı yol başarısız olursa None döner ki Selenium devreye girsin.
+    return None
 
-def görünmez_tarayici_ile_cek(link, driver):
-    """Tier 2 (Kaba Kuvvet): Sayfaya bir insan gibi girip ekrandaki metni kopyalar."""
+def gorunmez_tarayici_ile_cek(link, driver):
+    """Tier 2: Sayfaya bir insan gibi girip ekrandaki metni kopyalar."""
     try:
         driver.get(link)
-        time.sleep(3) # Sayfanın ve arkadaki PDF okuyucunun (pdf.js) yüklenmesi için 3 saniye bekle
-        
-        # Ekrandaki tüm metni al
+        time.sleep(3)
         metin = driver.find_element(By.TAG_NAME, "body").text
         temiz_metin = metin_temizle(metin)
-        
         if len(temiz_metin) > 10:
             return temiz_metin
         else:
@@ -79,7 +75,6 @@ def görünmez_tarayici_ile_cek(link, driver):
 
 def alt_sayfa_isle(link, driver):
     """İki aşamalı hibrit okuma yöneticisi."""
-    # Adım 1: Hızlı yolu dene (.pdf üreterek)
     pdf_linki = link.lower().replace('.htm', '.pdf')
     if "main.aspx" in pdf_linki and "main=" in pdf_linki:
         match = re.search(r'main=([^&]+)', pdf_linki)
@@ -88,14 +83,27 @@ def alt_sayfa_isle(link, driver):
             
     tam_metin = pdf_metnini_cek(pdf_linki)
     
-    # Adım 2: Hızlı yol işe yaramadıysa (None döndüyse), Görünmez Tarayıcıyı kullan
     if not tam_metin or len(tam_metin) < 10:
-        print("      -> Hızlı yol başarısız. Görünmez tarayıcı (Kaba Kuvvet) devreye giriyor...")
-        tam_metin = görünmez_tarayici_ile_cek(link, driver)
+        print("      -> Hızlı yol başarısız. Görünmez tarayıcı devreye giriyor...")
+        tam_metin = gorunmez_tarayici_ile_cek(link, driver)
         
     return tam_metin
 
-# --- HABERLEŞME (Bu kısımlar standart) ---
+# --- HABERLEŞME VE ARŞİV KONTROLÜ (Eksik olan fonksiyon eklendi) ---
+
+def get_arsiv_durumu():
+    """Ubuntu'dan veya yerel state'den en eski tarihi sorgular."""
+    api_url = os.environ.get("BOZKURT_API_URL")
+    if not api_url: 
+        return None
+    state_url = api_url.replace("/api/ingest", "/api/state")
+    try:
+        r = requests.get(state_url, timeout=15)
+        if r.status_code == 200:
+            return r.json().get("en_eski_kazinan_tarih")
+    except:
+        pass
+    return None
 
 def git_islem(dosya_yolu, islem_tipi):
     try:
@@ -112,24 +120,27 @@ def git_islem(dosya_yolu, islem_tipi):
 
 def veri_gonder(payload, dosya_yolu=None):
     api_url = os.environ.get("BOZKURT_API_URL")
-    if not api_url: return False
-    try:
-        response = requests.post(api_url, json=payload, timeout=30)
-        if response.status_code == 200:
-            print(f"[BAŞARILI] {payload['tarih']} verileri Ubuntu'ya mühürlendi.")
-            if dosya_yolu: git_islem(dosya_yolu, "sil")
-            return True
-    except:
-        pass
-    if dosya_yolu is None:
+    if not api_url: 
+        # API yoksa GitHub kuyruğunda sakla
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         dosya_yolu = os.path.join(KUYRUK_KLASORU, f"kuyruk_{payload['tarih']}_{timestamp}.json")
         with open(dosya_yolu, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=4)
         git_islem(dosya_yolu, "ekle")
+        return True
+
+    try:
+        response = requests.post(api_url, json=payload, timeout=30)
+        if response.status_code == 200:
+            print(f"[BAŞARILI] {payload['tarih']} verileri mühürlendi.")
+            if dosya_yolu: 
+                git_islem(dosya_yolu, "sil")
+            return True
+    except:
+        pass
     return False
 
-# --- ANA DÖNGÜ ---
+# --- ANA KAZIMA DÖNGÜSÜ ---
 
 def gunu_kazi(tarih_obj, driver):
     tarih_str = tarih_obj.strftime("%Y%m%d")
@@ -140,7 +151,8 @@ def gunu_kazi(tarih_obj, driver):
     
     try:
         response = requests.get(url, headers=headers, verify=False, timeout=20)
-        if response.status_code != 200: return True 
+        if response.status_code != 200: 
+            return True 
             
         response.encoding = response.apparent_encoding if response.apparent_encoding else 'windows-1254'
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -157,11 +169,10 @@ def gunu_kazi(tarih_obj, driver):
                 
             if text and len(text) > 5:
                 href = element['href']
-                link = urljoin(url, href)
+                link = urljoin(url, href) if 'urljoin' in globals() else f"https://www.resmigazete.gov.tr/eskiler/{yil}/{ay}/{href}"
                 
                 if "resmigazete.gov.tr" in link:
                     print(f"[KAZIMA] Okunuyor: {text[:40]}...")
-                    
                     tam_metin = alt_sayfa_isle(link, driver)
                     
                     veriler.append({
@@ -171,7 +182,9 @@ def gunu_kazi(tarih_obj, driver):
                         "tam_metin": tam_metin
                     })
                 
-        if not veriler: return True
+        if not veriler: 
+            return True
+            
         payload = {
             "source": "resmi_gazete_llm_ready",
             "tarih": tarih_obj.strftime("%Y-%m-%d"),
@@ -186,44 +199,34 @@ def gunu_kazi(tarih_obj, driver):
 
 def kazima_islem():
     baslangic_zamani = time.time()
-    MAX_SURE = 4.5 * 3600 # 4.5 Saatlik güvenlik sınırı
+    MAX_SURE = 4.5 * 3600 
     
-    # 1. Tarayıcıyı başlat
     driver = tarayici_baslat()
     
-    # 2. Varsa önceki günlerden kalan kuyruğu erit
     dosyalar = glob.glob(os.path.join(KUYRUK_KLASORU, "*.json"))
     for dosya in dosyalar:
         with open(dosya, "r", encoding="utf-8") as f:
             veri_gonder(json.load(f), dosya_yolu=dosya)
             
-    # 3. Her zaman önce bugünü kazı
     bugun = datetime.now()
     gunu_kazi(bugun, driver)
     
-    # 4. Arşiv durumunu öğren ve geriye doğru taramaya başla
     en_eski_tarih_str = get_arsiv_durumu()
     if not en_eski_tarih_str:
         en_eski_tarih_str = bugun.strftime("%Y-%m-%d")
         
     hedef_tarih = datetime.strptime(en_eski_tarih_str, "%Y-%m-%d") - timedelta(days=1)
     
-    print(f"[BİLGİ] Otonom geriye dönük tarama başlıyor. Hedef: {hedef_tarih.strftime('%Y-%m-%d')}")
-    
-    # 5. Süre dolana kadar veya arşiv bitene kadar geriye doğru git
     while True:
         if (time.time() - baslangic_zamani) >= MAX_SURE:
-            print("[BİLGİ] GitHub maksimum çalışma süresine yaklaştı. Görev güvenle devrediliyor.")
             break
         if hedef_tarih.strftime("%Y-%m-%d") <= "1921-02-07":
-            print("[BİLGİ] Bütün arşiv tarandı.")
             break
             
         gunu_kazi(hedef_tarih, driver)
-        time.sleep(random.uniform(2.0, 4.0)) # Ban yememek için rastgele mola
+        time.sleep(random.uniform(2.0, 4.0)) 
         hedef_tarih -= timedelta(days=1)
         
-    # 6. Tarayıcıyı kapat
     driver.quit()
 
 if __name__ == "__main__":
